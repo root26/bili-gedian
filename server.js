@@ -1,60 +1,91 @@
 require('dotenv').config();
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// 允许所有跨域（混合部署时 Vercel 请求 Render 需要）
-app.use(cors({
-    origin: '*', 
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// 允许跨域请求（Vercel 前端请求 Render 后端）
+app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 app.use(express.json());
 
-// ===== B站官方强制要求的安全响应头 =====
+// B站官方要求的安全响应头
 app.use((req, res, next) => {
-    // 允许被直播姬的 iframe 嵌入
     res.setHeader('X-Frame-Options', 'ALLOW-FROM https://play-live.bilibili.com/');
-    // 满足跨域隔离策略
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
 });
 
-// 托管静态文件（如果同域部署）
+// 静态文件托管（本地开发时方便调试 HTML）
 app.use(express.static(__dirname));
 
-const DATA_FILE = path.join(__dirname, 'playlist_data.json');
+// 初始化 Supabase 客户端
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
 
-// ================= 本地数据存取接口 =================
-app.get('/api/config', (req, res) => {
-    if (fs.existsSync(DATA_FILE)) {
-        res.json(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
-    } else {
-        // 兜底默认数据：如果 Render 休眠导致文件丢失，给一份默认的
-        const defaultData = { 
-            songs: "Rap / 卡点-壳,她,123,APT\n流行歌单 (一)-笼,你,骗,蓝\n儿歌歌单-勇气大爆发,快乐女孩", 
-            theme: "cute-purple", 
-            scroll: true, 
-            speed: 70, 
-            fontSize: 22, 
-            width: 440, 
-            height: 1000, 
+// ================= 数据存取接口（按 Mid 隔离） =================
+
+// 获取配置：必须传 mid
+app.get('/api/config', async (req, res) => {
+    const mid = req.query.mid;
+    if (!mid) {
+        return res.status(400).json({ error: '缺少 mid 参数' });
+    }
+
+    const { data, error } = await supabase
+        .from('playlists')
+        .select('config')
+        .eq('mid', mid)
+        .single();
+
+    // 如果没找到数据，或者出错了，返回默认配置
+    if (error || !data || !data.config) {
+        return res.json({
+            songs: "",
+            theme: "cute-purple",
+            scroll: true,
+            speed: 70,
+            fontSize: 22,
+            width: 440,
+            height: 1000,
             borderWidth: 10,
             staticCategory: "all"
-        };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(defaultData, null, 2), 'utf8');
-        res.json(defaultData);
+        });
     }
+    
+    // 【核心修复】直接返回里面的 config 对象，而不是外面包裹着 mid 的整个对象
+    res.json(data.config); 
 });
 
-app.post('/api/config', (req, res) => {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(req.body, null, 2), 'utf8');
-    res.json({ success: true, message: "保存成功" });
+// 保存配置：必须传 mid
+app.post('/api/config', async (req, res) => {
+    const mid = req.body.mid;
+    if (!mid) {
+        return res.status(400).json({ error: '缺少 mid 参数' });
+    }
+
+    const { config } = req.body;
+    if (!config) {
+        return res.status(400).json({ error: '缺少 config 数据' });
+    }
+
+    const { error } = await supabase
+        .from('playlists')
+        .upsert({ 
+            mid: mid, 
+            config: config, 
+            updated_at: new Date() 
+        }, { onConflict: 'mid' });
+
+    if (error) {
+        console.error('Supabase 保存失败:', error);
+        return res.status(500).json({ error: '保存失败' });
+    }
+    res.json({ success: true, message: '保存成功' });
 });
 
 // ================= B站官方签名与鉴权 =================
@@ -66,13 +97,13 @@ function generateSignature(headers, secret) {
 
 app.get('/api/bili/start', async (req, res) => {
     try {
-        const { code, app_id, room_id, mid } = req.query;
+        const { code } = req.query;
         const headers = {
             'x-bili-accesskeyid': process.env.ACCESS_KEY_ID,
             'x-bili-content-md5': crypto.createHash('md5').update(JSON.stringify({ code })).digest('hex'),
             'x-bili-signature-method': 'HMAC-SHA256',
             'x-bili-signature-nonce': crypto.randomUUID(),
-            'x-bili-signature-version': '2.0', 
+            'x-bili-signature-version': '2.0',
             'x-bili-timestamp': Math.floor(Date.now() / 1000).toString()
         };
         const authorization = generateSignature(headers, process.env.ACCESS_KEY_SECRET);
@@ -82,8 +113,8 @@ app.get('/api/bili/start', async (req, res) => {
     }
 });
 
-// 动态读取 Render 分配的端口
+// 启动服务
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ 后端服务已启动！运行在端口: ${PORT}`);
+    console.log(`✅ 后端服务已启动，运行在端口: ${PORT}`);
 });
