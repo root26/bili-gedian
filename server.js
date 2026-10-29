@@ -5,8 +5,6 @@ const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-
-// 允许跨域请求（Vercel 前端请求 Render 后端）
 app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 app.use(express.json());
 
@@ -18,23 +16,18 @@ app.use((req, res, next) => {
     next();
 });
 
-// 静态文件托管（本地开发时方便调试 HTML）
 app.use(express.static(__dirname));
 
-// 初始化 Supabase 客户端
+// 【关键】确保 SUPABASE_ANON_KEY 的值是 service_role 密钥
 const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
+    process.env.SUPABASE_ANON_KEY 
 );
 
 // ================= 数据存取接口（按 Mid 隔离） =================
-
-// 获取配置：必须传 mid
 app.get('/api/config', async (req, res) => {
     const mid = req.query.mid;
-    if (!mid) {
-        return res.status(400).json({ error: '缺少 mid 参数' });
-    }
+    if (!mid) return res.status(400).json({ error: '缺少 mid 参数' });
 
     const { data, error } = await supabase
         .from('playlists')
@@ -42,44 +35,25 @@ app.get('/api/config', async (req, res) => {
         .eq('mid', mid)
         .single();
 
-    // 如果没找到数据，或者出错了，返回默认配置
     if (error || !data || !data.config) {
         return res.json({
-            songs: "",
-            theme: "cute-purple",
-            scroll: true,
-            speed: 70,
-            fontSize: 22,
-            width: 440,
-            height: 1000,
-            borderWidth: 10,
-            staticCategory: "all"
+            songs: "", theme: "cute-purple", scroll: true, speed: 70,
+            fontSize: 22, width: 440, height: 1000, borderWidth: 10, staticCategory: "all"
         });
     }
-    
-    // 【核心修复】直接返回里面的 config 对象，而不是外面包裹着 mid 的整个对象
-    res.json(data.config); 
+    res.json(data.config);
 });
 
-// 保存配置：必须传 mid
 app.post('/api/config', async (req, res) => {
     const mid = req.body.mid;
-    if (!mid) {
-        return res.status(400).json({ error: '缺少 mid 参数' });
-    }
+    if (!mid) return res.status(400).json({ error: '缺少 mid 参数' });
 
     const { config } = req.body;
-    if (!config) {
-        return res.status(400).json({ error: '缺少 config 数据' });
-    }
+    if (!config) return res.status(400).json({ error: '缺少 config 数据' });
 
     const { error } = await supabase
         .from('playlists')
-        .upsert({ 
-            mid: mid, 
-            config: config, 
-            updated_at: new Date() 
-        }, { onConflict: 'mid' });
+        .upsert({ mid: mid, config: config, updated_at: new Date() }, { onConflict: 'mid' });
 
     if (error) {
         console.error('Supabase 保存失败:', error);
@@ -113,8 +87,8 @@ app.get('/api/bili/start', async (req, res) => {
     }
 });
 
-// 启动服务
+// 【关键】绑定 0.0.0.0 以防 Render 部署失败
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ 后端服务已启动，运行在端口: ${PORT}`);
 });
